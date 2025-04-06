@@ -1,0 +1,608 @@
+---
+title: "Анализ выживаемости пассажиров Титаника"
+author: "Nikolay Voytov"
+date: "`r Sys.Date()`"
+output:
+  md_document:
+    variant: gfm
+  html_document:
+    toc: yes
+    toc_float: yes
+    theme: flatly
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, fig.height = 5, fig.width = 9)
+
+# Определение единой цветовой палитры для всего отчета
+palette_main <- c(
+  blue = "#0072B2", 
+  green = "#009E73",
+  orange = "#D55E00",
+  purple = "#9370DB"
+)
+
+# Определение единой цветовой палитры для категорий выживаемости
+palette_survival <- c(
+  "No" = "#D55E00",   # Не выжил - оранжевый
+  "Yes" = "#009E73"   # Выжил - зеленый
+)
+```
+
+## 1. Введение и подготовка данных
+
+### 1.1 Библиотеки
+
+```{r libraries, echo=TRUE}
+# Основные библиотеки для обработки и визуализации данных
+library(tidyverse)      # Набор пакетов для манипуляции данными и визуализации
+library(caret)          # Инструменты для построения моделей машинного обучения
+library(randomForest)   # Реализация алгоритма случайного леса
+library(pROC)           # Построение и анализ ROC-кривых
+library(mice)           # Множественная импутация пропущенных значений
+library(ggplot2)        # Расширенная визуализация данных
+library(corrplot)       # Визуализация корреляционных матриц
+library(margins)        # Расчет предельных эффектов в статистических моделях
+library(vip)            # Визуализация важности переменных
+
+library(gridExtra)      # Объединение нескольких графиков в сетку
+library(DataExplorer)   # Автоматизированный разведочный анализ данных
+library(knitr)          # Инструменты для создания динамических отчетов
+```
+
+### 1.2 Загрузка данных
+
+Загрузим набор данных о пассажирах Титаника, который состоит из обучающей и тестовой выборок, а также файл с правильными ответами для тестовой выборки.
+
+Данные взяты на ресурсе [`https://www.kaggle.com/c/titanic/data`](https://www.kaggle.com/c/titanic/data)
+
+```{r load_data, echo=TRUE}
+# Загрузка наборов данных
+train <- read.csv("train.csv", stringsAsFactors = FALSE)
+test <- read.csv("test.csv", stringsAsFactors = FALSE)
+# Загрузка правильных ответов для тестовой выборки
+test_answers <- read.csv("gender_submission.csv", stringsAsFactors = FALSE)
+
+# Добавление столбца 'dataset' для идентификации источника
+train$dataset <- "train"
+test$dataset <- "test"
+
+# Создание полного набора данных для предобработки
+test$Survived <- NA
+full_data <- rbind(train, test)
+
+# Вывод размерностей для проверки
+cat("Размеры обучающего набора:", dim(train), "\n")
+cat("Размеры тестового набора:", dim(test), "\n")
+cat("Размеры полного набора данных:", dim(full_data), "\n")
+cat("Размеры набора с правильными ответами:", dim(test_answers), "\n")
+```
+
+## 2. Исследование и очистка данных
+
+### 2.1 Структура данных
+
+Рассмотрим структуру данных для понимания типов переменных и их значений:
+
+```{r data_structure}
+# Структура данных
+str(full_data)
+
+# Сводная статистика
+summary(full_data)
+```
+
+Из структуры данных видно, что у нас есть как числовые переменные (возраст, стоимость билета), так и категориальные (пол, класс). Из некоторых переменных (имя и кабина), можно получить дополнительную информацию - это учтем в дальнейшем.
+
+### 2.2 Анализ пропущенных значений
+
+Оценим масштаб проблемы с пропущенными значениями.
+
+```{r missing_values}
+# Таблица пропущенных значений
+missing_values <- colSums(is.na(full_data))
+missing_percent <- round(missing_values / nrow(full_data) * 100, 2)
+missing_df <- data.frame(
+  Переменная = names(missing_values),
+  Количество_пропусков = missing_values,
+  Процент_пропусков = missing_percent
+)
+missing_df <- missing_df[order(-missing_df$Количество_пропусков), ]
+print(missing_df)
+
+# Визуализация пропущенных значений
+plot_missing(full_data, title = "Анализ пропущенных значений")
+```
+
+Анализ пропущенных значений показывает:
+
+-   **Survived (31.93%)** - пропуски в тестовом наборе данных, которые будут предсказаны.
+-   **Age (20.09%)** - значительное количество пропущенных значений, дальше предложен алгоритм замены пропусков.
+-   **Fare (0.08%)** - можно заменить на медиану.
+
+## 3. Формирование признаков и заполнение пропущенных значений
+
+### 3.1 Создание новых признаков
+
+Создадим новые признаки для улучшения предсказательной способности моделей:
+
+```{r feature_engineering}
+# 1. Извлечение титула из имени
+full_data$Title <- gsub('(.*, )|(\\..*)', '', full_data$Name)
+
+# 2. Объединение редких титулов
+rare_titles <- c('Dona', 'Lady', 'the Countess', 'Capt', 'Col', 'Don', 
+                 'Dr', 'Major', 'Rev', 'Sir', 'Jonkheer')
+full_data$Title[full_data$Title %in% rare_titles] <- 'Rare'
+full_data$Title[full_data$Title == 'Mlle'] <- 'Miss'
+full_data$Title[full_data$Title == 'Ms'] <- 'Miss'
+full_data$Title[full_data$Title == 'Mme'] <- 'Mrs'
+
+# 3. Создание признаков размера семьи и одиночного путешествия
+full_data$FamilySize <- full_data$SibSp + full_data$Parch + 1
+full_data$IsAlone <- ifelse(full_data$FamilySize == 1, 1, 0)
+
+# 4. Извлечение палубы из номера каюты
+full_data$Deck <- factor(sapply(full_data$Cabin, function(x) {
+  if(is.na(x)) return(NA)
+  return(substr(x, 1, 1))
+}))
+
+# 5. Преобразование переменных в факторы
+full_data$Survived <- factor(full_data$Survived, levels = c(0, 1), labels = c("No", "Yes"))
+full_data$Pclass <- factor(full_data$Pclass, levels = c(1, 2, 3), labels = c("1st", "2nd", "3rd"))
+full_data$Sex <- factor(full_data$Sex)
+full_data$Embarked <- factor(full_data$Embarked)
+full_data$Title <- factor(full_data$Title)
+full_data$IsAlone <- factor(full_data$IsAlone)
+```
+
+В результате инженерии признаков создали:
+
+1.  Переменную **Title** (титул) на основе имени пассажира.
+    1.  Сгруппировали редкие титулы для уменьшения количества категорий
+2.  Создали переменную **FamilySize** (размер семьи) на основе количества родных на борту
+3.  Создали бинарную переменную **IsAlone** (путешествует один)
+4.  Извлекли информацию о палубе (**Deck**) из номера каюты
+5.  Преобразовали все категориальные переменные в факторы
+
+### 3.2 Импутация пропущенных значений
+
+Заменять по среднему не будем - это даст сильный выброс в данных.
+
+```{r imputation}
+# 1. Заполнение пропущенных значений Embarked
+if(sum(is.na(full_data$Embarked)) > 0) {
+  most_frequent_embarked <- names(sort(table(full_data$Embarked), decreasing = TRUE))[1]
+  full_data$Embarked[is.na(full_data$Embarked)] <- most_frequent_embarked
+}
+
+# 2. Заполнение пропущенных значений Fare
+if(sum(is.na(full_data$Fare)) > 0) {
+  median_fare <- median(full_data$Fare, na.rm = TRUE)
+  full_data$Fare[is.na(full_data$Fare)] <- median_fare
+}
+
+# 3. Импутация возраста с использованием MICE
+# Создание подмножества данных для импутации
+age_imputation_vars <- c("Age", "Pclass", "Sex", "SibSp", "Parch", "Fare", "Title", "FamilySize")
+age_imputation_data <- full_data[, age_imputation_vars]
+
+# Выполнение импутации MICE (Multiple Imputation by Chained Equations)
+set.seed(123)
+mice_mod <- mice(age_imputation_data, method = "rf", m = 5, maxit = 50, seed = 123, printFlag = FALSE)
+age_imputation_data <- complete(mice_mod)
+
+# Замена столбца Age в исходных данных
+full_data$Age <- age_imputation_data$Age
+
+# 4. Проверка оставшихся пропущенных значений
+missing_after_imputation <- colSums(is.na(full_data))
+print(missing_after_imputation)
+```
+
+Для заполнения (импутации) пропущенных значений используем:
+
+1.  Для порта посадки (**Embarked**) - наиболее частое значение
+2.  Для стоимости билета (**Fare**) - медианное значение
+3.  Для возраста (**Age**) - алгоритм множественной импутации MICE с методом случайного леса
+
+После импутации остались только пропущенные значения в целевой переменной **Survived** для тестового набора.
+
+## 4. Разведочный анализ данных (EDA)
+
+Разделим данные обратно на обучающий и тестовый наборы для анализа (в источнике датасет разделен на три файла):
+
+```{r split_data}
+# Разделение обратно на обучающий и тестовый наборы
+train_clean <- full_data[full_data$dataset == "train", ]
+test_clean <- full_data[full_data$dataset == "test", ]
+```
+
+### 4.1 Одномерные распределения
+
+Исследуем распределения ключевых переменных:
+
+```{r univariate_distributions, fig.height = 6}
+# 1. Распределение возраста
+age_plot <- ggplot(train_clean, aes(x = Age)) +
+  geom_histogram(binwidth = 5, fill = palette_main["blue"], color = "black", alpha = 0.7) +
+  labs(title = "Распределение возраста", x = "Возраст", y = "Количество") +
+  theme_minimal()
+
+# 2. Распределение стоимости билета
+fare_plot <- ggplot(train_clean, aes(x = Fare)) +
+  geom_histogram(binwidth = 20, fill = palette_main["green"], color = "black", alpha = 0.7) +
+  labs(title = "Распределение стоимости билета", x = "Стоимость", y = "Количество") +
+  theme_minimal()
+
+# 3. Распределение классов
+class_plot <- ggplot(train_clean, aes(x = Pclass, fill = Pclass)) +
+  geom_bar(alpha = 0.7) +
+  # scale_fill_manual(values = setNames(palette_main[1:3], c("1st", "2nd", "3rd"))) +
+  labs(title = "Распределение классов пассажиров", x = "Класс", y = "Количество") +
+  theme_minimal()
+
+# 4. Распределение пола
+sex_plot <- ggplot(train_clean, aes(x = Sex, fill = Sex)) +
+  geom_bar(alpha = 0.7) +
+  # scale_fill_manual(values = c("female" = palette_main["orange"], "male" = palette_main["purple"])) +
+  labs(title = "Распределение по полу", x = "Пол", y = "Количество") +
+  theme_minimal()
+
+# Размещение графиков в сетке
+grid.arrange(age_plot, fare_plot, class_plot, sex_plot, ncol = 2)
+```
+
+Анализ распределений показывает:
+
+-   **Возраст**: большинство пассажиров были молодыми взрослыми (20-40 лет)
+-   **Стоимость билета**: распределение сильно скошено, преобладают более дешевые билеты
+-   **Класс**: больше всего пассажиров путешествовало в 3-м классе
+-   **Пол**: мужчин на борту было значительно больше, чем женщин
+
+### 4.2 Анализ выживаемости по категориям
+
+Рассмотрим, как различные факторы влияли на выживаемость:
+
+```{r survival_by_categories, fig.height = 7}
+# 1. Выживаемость по классам
+surv_class <- ggplot(train_clean, aes(x = Pclass, fill = Survived)) +
+  geom_bar(position = "fill") +
+  labs(title = "Выживаемость по классу", 
+       x = "Класс", y = "Доля") +
+  scale_fill_manual(values = palette_survival) +
+  theme_minimal()
+
+# 2. Выживаемость по полу
+surv_sex <- ggplot(train_clean, aes(x = Sex, fill = Survived)) +
+  geom_bar(position = "fill") +
+  labs(title = "Выживаемость по полу", 
+       x = "Пол", y = "Доля") +
+  scale_fill_manual(values = palette_survival) +
+  theme_minimal()
+
+# 3. Выживаемость по возрастным группам
+train_clean$AgeGroup <- cut(train_clean$Age, 
+                           breaks = c(0, 10, 20, 30, 40, 50, 60, 80),
+                           labels = c("0-10", "11-20", "21-30", "31-40", "41-50", "51-60", "61+"))
+
+surv_age <- ggplot(train_clean, aes(x = AgeGroup, fill = Survived)) +
+  geom_bar(position = "fill") +
+  labs(title = "Выживаемость по возрастным группам", 
+       x = "Возрастная группа", y = "Доля") +
+  scale_fill_manual(values = palette_survival) +
+  theme_minimal()
+
+# 4. Выживаемость по размеру семьи
+surv_family <- ggplot(train_clean, aes(x = factor(FamilySize), fill = Survived)) +
+  geom_bar(position = "fill") +
+  labs(title = "Выживаемость по размеру семьи", 
+       x = "Размер семьи", y = "Доля") +
+  scale_fill_manual(values = palette_survival) +
+  theme_minimal()
+
+# Размещение графиков в сетку
+grid.arrange(surv_class, surv_sex, surv_age, surv_family, ncol = 2)
+```
+
+Наблюдения относительно шансов на выживание:
+
+1.  **Класс**: пассажиры первого класса (\~63%) VS пассажиры третьего класса (\~24%).
+2.  **Пол**: женщины (\~75%) VS мужчины (\~19%).
+3.  **Возраст**: Дети (0-10 лет) имели более высокие шансы (\~60%).
+4.  **Размер семьи**: Пассажиры со средним размером семьи (3-4 человека) выживали чаще (\~60%), чем одиночки (\~30%) или очень большие группы.
+
+### 4.3 Корреляционный анализ
+
+Рассмотрим взаимосвязи между числовыми переменными:
+
+```{r correlation_analysis}
+# Выбор числовых переменных для корреляции
+numeric_vars <- train_clean %>%
+  select(PassengerId, Age, SibSp, Parch, Fare, FamilySize) %>%
+  mutate(Survived = as.numeric(train_clean$Survived) - 1)  # Преобразование обратно в 0/1 для корреляции
+
+# Вычисление корреляционной матрицы
+cor_matrix <- cor(numeric_vars, use = "complete.obs")
+
+# Построение корреляционной матрицы
+corrplot(cor_matrix, method = "circle", type = "upper", 
+         tl.col = "black", tl.srt = 45, 
+         title = "Корреляционная матрица",
+         col = colorRampPalette(c(palette_survival["No"], "#FFFFFF", palette_survival["Yes"]))(100),
+         mar = c(0, 0, 1, 0))
+```
+
+Анализ корреляционной матрицы показывает:
+
+1.  Переменные **SibSp** и **FamilySize** сильно коррелируют (r ≈ 0.8), что логично, так как FamilySize = SibSp + Parch + 1
+2.  **Стоимость билета** (Fare) имеет положительную корреляцию с выживаемостью (r ≈ 0.25)
+3.  **Возраст** имеет слабую отрицательную корреляцию с выживаемостью (r ≈ -0.1)
+
+## 5. Моделирование
+
+### 5.1 Подготовка к моделированию
+
+Выберем переменные для моделирования и подготовим датасеты:
+
+```{r model_preparation}
+# 1. Выбор признаков для моделирования
+model_vars <- c("Survived", "Pclass", "Sex", "Age", "SibSp", "Parch", 
+                "Fare", "Embarked", "Title", "FamilySize", "IsAlone")
+
+# 2. Подготовка обучающего и тестового наборов данных
+train_model <- train_clean[, model_vars]
+test_model <- test_clean[, model_vars]
+
+# 3. Приведение уровней факторов в тестовом наборе к тем же, что и в обучающем
+for(col in names(train_model)) {
+  if(is.factor(train_model[[col]])) {
+    levels_train <- levels(train_model[[col]])
+    levels_test <- levels(test_model[[col]])
+    
+    if(!identical(levels_train, levels_test)) {
+      test_model[[col]] <- factor(test_model[[col]], levels = levels_train)
+    }
+  }
+}
+
+# 4. Добавление правильных ответов в тестовый набор для дальнейшей оценки
+test_true_survived <- factor(test_answers$Survived, levels = c(0, 1), labels = c("No", "Yes"))
+```
+
+### 5.2 Логистическая регрессия
+
+Обучим модель логистической регрессии с учетом взаимодействия между классом и полом (выбрана эмпирически - другие признаки обучали более слабую модель):
+
+```{r logistic_regression}
+# 1. Обучение модели логистической регрессии
+set.seed(123)
+logit_model <- glm(Survived ~ 
+                     Pclass*Sex +  # Взаимодействие класса и пола
+                     Age + 
+                     SibSp + 
+                     Parch + 
+                     Fare,
+                     family = binomial(link = "logit"),
+                     data = train_model)
+
+# 2. Сводка модели
+summary(logit_model)
+
+# 3. Расчет предельных эффектов
+logit_margins <- margins(logit_model)
+margins_summary <- summary(logit_margins)
+
+# 4. Преобразование для лучшей визуализации
+margins_df <- as.data.frame(summary(logit_margins))
+margins_df$variable <- rownames(margins_df)
+
+# Создание понятных описаний для переменных
+var_labels <- c(
+  "Age" = "Возраст",
+  "Fare" = "Стоимость билета",
+  "Parch" = "Кол-во родителей/детей",
+  "SibSp" = "Кол-во братьев/сестер/супругов",
+  "Pclass2nd" = "Класс: 2-й (отн. 1-го)",
+  "Pclass3rd" = "Класс: 3-й (отн. 1-го)",
+  "Sexmale" = "Пол: мужской"
+)
+
+# Замена идентификаторов переменных на их описания
+margins_df$variable <- sapply(margins_df$variable, function(x) {
+  if (x %in% names(var_labels)) {
+    return(var_labels[x])
+  } else {
+    return(x)
+  }
+})
+
+margins_df <- margins_df[order(margins_df$AME), ]
+margins_df$variable <- factor(margins_df$variable, levels = margins_df$variable)
+```
+
+И оценим предельные эффекты:
+
+```{r marginal_effects}
+ggplot(margins_df, aes(x = factor, y = AME)) +  
+  geom_bar(stat = "identity", fill = "#D55E00") +
+  coord_flip() +
+  labs(title = "Средние предельные эффекты с 95% ДИ",
+       x = "Переменная",
+       y = "Средний предельный эффект") +
+  theme_minimal()
+```
+
+### 5.3 Случайный лес
+
+Обучим модель случайного леса, которая учитывает все созданные признаки:
+
+```{r random_forest}
+# 1. Обучение модели случайного леса
+set.seed(123)
+rf_model <- randomForest(Survived ~ Pclass + Sex + Age + SibSp + Parch + 
+                           Fare + Embarked + Title + FamilySize + IsAlone,
+                         data = train_model, 
+                         ntree = 500,
+                         mtry = 3,
+                         importance = TRUE)
+```
+
+И проинтерпретируем важность признаков
+
+```{r random_forest_features}
+# 2. Вывод модели
+print(rf_model)
+
+# 3. Важность переменных
+varImpPlot(rf_model, main = "Важность переменных в модели случайного леса",
+           col = c(palette_main["blue"], palette_main["green"]),
+           cex = 0.8)
+```
+
+## 6. Оценка моделей
+
+### 6.1 Прогнозирование на тестовой выборке
+
+Рассчитаем прогнозные значения для обучающей и контрольной выборок:
+
+```{r model_prediction}
+# 1. Логистическая регрессия - прогнозы для обучающего набора
+logit_probs_train <- predict(logit_model, type = "response")
+logit_pred_train <- ifelse(logit_probs_train > 0.5, "Yes", "No")
+logit_pred_train <- factor(logit_pred_train, levels = c("No", "Yes"))
+logit_cm_train <- confusionMatrix(logit_pred_train, train_model$Survived)
+
+# 2. Случайный лес - прогнозы для обучающего набора
+rf_probs_train <- predict(rf_model, type = "prob")[, "Yes"]
+rf_pred_train <- predict(rf_model)
+rf_cm_train <- confusionMatrix(rf_pred_train, train_model$Survived)
+
+# 3. Логистическая регрессия - прогнозы для тестового набора
+logit_probs_test <- predict(logit_model, newdata = test_model, type = "response")
+logit_pred_test <- ifelse(logit_probs_test > 0.5, "Yes", "No")
+logit_pred_test <- factor(logit_pred_test, levels = c("No", "Yes"))
+logit_cm_test <- confusionMatrix(logit_pred_test, test_true_survived)
+
+# 4. Случайный лес - прогнозы для тестового набора
+rf_probs_test <- predict(rf_model, newdata = test_model, type = "prob")[, "Yes"]
+rf_pred_test <- predict(rf_model, newdata = test_model, type = "class")
+rf_cm_test <- confusionMatrix(rf_pred_test, test_true_survived)
+
+# 5. Создание ROC-кривых для обоих наборов
+logit_roc_train <- roc(train_model$Survived, logit_probs_train)
+rf_roc_train <- roc(train_model$Survived, rf_probs_train)
+logit_roc_test <- roc(test_true_survived, as.numeric(logit_probs_test))
+rf_roc_test <- roc(test_true_survived, as.numeric(rf_probs_test))
+```
+
+### 6.2 Матрицы ошибок
+
+```{r confusion_matrices, fig.height = 7, fig.width = 10}
+# Функция для визуализации матрицы ошибок
+plot_confusion_matrix <- function(cm, title) {
+  cm_table <- as.table(cm$table)
+  cm_df <- as.data.frame(cm_table)
+  names(cm_df) <- c("Факт", "Прогноз", "Частота")
+  
+  # Расчет процентов
+  cm_df$Процент <- cm_df$Частота / sum(cm_df$Частота) * 100
+  
+  # Создаем тепловую карту
+  ggplot(cm_df, aes(x = Прогноз, y = Факт, fill = Частота)) +
+    geom_tile() +
+    geom_text(aes(label = paste0(Частота, "\n(", round(Процент, 1), "%)")), color = "white", size = 4) +
+    scale_fill_gradient(low = palette_survival["No"], high = palette_survival["Yes"]) +
+    labs(title = title, x = "Прогноз", y = "Факт") +
+    theme_minimal() +
+    theme(legend.position = "none")
+}
+
+# Визуализация матриц ошибок для тестового набора
+grid.arrange(
+  plot_confusion_matrix(logit_cm_test, "Матрица ошибок: Логистическая регрессия (тест)"),
+  plot_confusion_matrix(rf_cm_test, "Матрица ошибок: Случайный лес (тест)"),
+  ncol = 2
+)
+```
+
+### 6.3 ROC-кривые
+
+```{r roc_curves}
+# Визуализация ROC-кривых для тестового набора
+par(mar = c(5, 4, 4, 2) + 0.1)
+plot(logit_roc_test, col = palette_main["blue"], lwd = 2, 
+     main = "Сравнение ROC-кривых моделей (тестовый набор)",
+     xlab = "1 - Специфичность", ylab = "Чувствительность")
+lines(rf_roc_test, col = palette_main["orange"], lwd = 2)
+legend("bottomright", 
+       legend = c(paste("Логистическая регрессия (AUC =", round(auc(logit_roc_test), 3), ")"), 
+                 paste("Случайный лес (AUC =", round(auc(rf_roc_test), 3), ")")),
+       col = c(palette_main["blue"], palette_main["orange"]), 
+       lwd = 2)
+```
+
+### 6.4 Сводная таблица метрик качества
+
+```{r metrics_table}
+# Создание сводной таблицы метрик (с AUC в конце)
+metrics_table <- data.frame(
+  Метрика = c("Точность (Accuracy)", "Precision", "Recall", "AUC"),
+  ЛР_обучающая = c(logit_cm_train$overall["Accuracy"], 
+                   logit_cm_train$byClass["Pos Pred Value"],
+                   logit_cm_train$byClass["Sensitivity"],
+                   auc(logit_roc_train)),
+  СЛ_обучающая = c(rf_cm_train$overall["Accuracy"],
+                   rf_cm_train$byClass["Pos Pred Value"],
+                   rf_cm_train$byClass["Sensitivity"],
+                   auc(rf_roc_train)),
+  ЛР_тестовая = c(logit_cm_test$overall["Accuracy"], 
+                  logit_cm_test$byClass["Pos Pred Value"],
+                  logit_cm_test$byClass["Sensitivity"],
+                  auc(logit_roc_test)),
+  СЛ_тестовая = c(rf_cm_test$overall["Accuracy"], 
+                  rf_cm_test$byClass["Pos Pred Value"],
+                  rf_cm_test$byClass["Sensitivity"],
+                  auc(rf_roc_test))
+)
+
+# Сохраним значения в переменные для использования в выводах
+lr_test_accuracy <- round(as.numeric(logit_cm_test$overall["Accuracy"]) * 100, 2)
+rf_test_accuracy <- round(as.numeric(rf_cm_test$overall["Accuracy"]) * 100, 2)
+lr_test_auc <- round(auc(logit_roc_test) * 100, 2)
+rf_test_auc <- round(auc(rf_roc_test) * 100, 2)
+
+# Вывод таблицы метрик
+kable(metrics_table, digits = 4,
+      caption = "Сравнение метрик качества моделей на обучающем и тестовом наборах", 
+      col.names = c("Метрика", "ЛР (обучающая)", "СЛ (обучающая)", "ЛР (тестовая)", "СЛ (тестовая)"))
+```
+
+## 7. Результаты и выводы
+
+### 7.1 Сравнение моделей и ключевые факторы
+
+Логистическая регрессия демонстрирует высокую точность **`r lr_test_accuracy`%** на тестовых данных и выше точности модели случайного леса (**`r rf_test_accuracy`%**).
+
+Логистическая регрессия также показывает более высокие значения по другим метрика классификации (AUC **`r lr_test_auc`%** против **`r rf_test_auc`%**), и обладает лучшей интерпретируемостью.
+
+**Ключевые факторы выживаемости:**
+
+1.  **Пол**: женщины имели в \~3.9 раза больше шансов выжить по сравнению с мужчинами.
+2.  **Класс**: пассажиры 1-го класса имели в \~2.7 раза больше шансов выжить, чем пассажиры 3-го класса.
+3.  **Возраст**: каждый дополнительный год возраста снижал вероятность выживания на \~0.5%.
+4.  **Размер семьи**: оптимальный размер семьи для выживания --- 3-4 человека.
+
+Результаты совпадают с принципом "женщины и дети сначала" при спасении пассажиров Титаника и демонстрируют обусловленность выживаемости социальным неравенством.
+
+### 7.2 Рекомендации по использованию моделей
+
+При выборе оптимальной модели для прогнозирования выживаемости пассажиров Титаника следует учитывать:
+
+-   **Логистическая регрессия** оптимальна для большинства задач, обеспечивая как высокую точность (**`r lr_test_accuracy`%**), так и хорошую интерпретируемость результатов.
+-   **Случайный лес** может быть полезен для анализа важности различных признаков, показывая, что пол (Sex), титул (Title), возраст (Age) и стоимость билета (Fare) имеют наибольшее влияние на выживаемость. Может быть эффективнее на бОльших объемах данных.
+
+В целом, сохраняется принцип: чем более выраженные зависимости в данных и чем меньше их объем, тем более предпочтительны простые модели.
