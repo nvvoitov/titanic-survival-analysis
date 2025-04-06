@@ -146,7 +146,7 @@ cat("Размеры набора с правильными ответами:", d
     ## Embarked       Embarked                    0              0.00
     ## dataset         dataset                    0              0.00
 
-![](test3_files/figure-gfm/missing_values-1.png)<!-- -->
+![](figures/missing_values-1.png)
 
 Анализ пропущенных значений показывает:
 
@@ -203,7 +203,7 @@ cat("Размеры набора с правильными ответами:", d
 
 Исследуем распределения ключевых переменных:
 
-![](test3_files/figure-gfm/univariate_distributions-1.png)<!-- -->
+![]figures/univariate_distributions-1.png)
 
 Анализ распределений показывает:
 
@@ -218,7 +218,7 @@ cat("Размеры набора с правильными ответами:", d
 
 Рассмотрим, как различные факторы влияли на выживаемость:
 
-![](test3_files/figure-gfm/survival_by_categories-1.png)<!-- -->
+![](figures/survival_by_categories-1.png)
 
 Наблюдения относительно шансов на выживание:
 
@@ -233,7 +233,7 @@ cat("Размеры набора с правильными ответами:", d
 
 Рассмотрим взаимосвязи между числовыми переменными:
 
-![](test3_files/figure-gfm/correlation_analysis-1.png)<!-- -->
+![](figures/correlation_analysis-1.png)
 
 Анализ корреляционной матрицы показывает:
 
@@ -286,7 +286,7 @@ cat("Размеры набора с правильными ответами:", d
 
 И оценим предельные эффекты:
 
-![](test3_files/figure-gfm/marginal_effects-1.png)<!-- -->
+![](figures/marginal_effects-1.png)
 
 ### 5.3 Случайный лес
 
@@ -307,7 +307,7 @@ cat("Размеры набора с правильными ответами:", d
     ## No  492  57   0.1038251
     ## Yes  99 243   0.2894737
 
-![](test3_files/figure-gfm/random_forest_features-1.png)<!-- -->
+![](figures/random_forest_features-1.png)
 
 ## 6. Оценка моделей
 
@@ -317,11 +317,11 @@ cat("Размеры набора с правильными ответами:", d
 
 ### 6.2 Матрицы ошибок
 
-![](test3_files/figure-gfm/confusion_matrices-1.png)<!-- -->
+![](figures/confusion_matrices-1.png)
 
 ### 6.3 ROC-кривые
 
-![](test3_files/figure-gfm/roc_curves-1.png)<!-- -->
+![](figures/roc_curves-1.png)
 
 ### 6.4 Сводная таблица метрик качества
 
