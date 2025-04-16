@@ -146,7 +146,7 @@ cat("Размеры набора с правильными ответами:", d
     ## Embarked       Embarked                    0              0.00
     ## dataset         dataset                    0              0.00
 
-![](figures/missing_values-1.png
+![](figures/missing_values-1.png)
 
 Анализ пропущенных значений показывает:
 
@@ -203,7 +203,7 @@ cat("Размеры набора с правильными ответами:", d
 
 Исследуем распределения ключевых переменных:
 
-![]figures/univariate_distributions-1.png
+![](figures/univariate_distributions-1.png)
 
 Анализ распределений показывает:
 
